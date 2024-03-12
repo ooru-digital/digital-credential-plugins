@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-package io.mosip.esignet.sunbirdrc.integration.service;
+package io.mosip.esignet.credissuer.integration.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,7 +13,7 @@ import io.mosip.esignet.api.exception.KycExchangeException;
 import io.mosip.esignet.api.exception.SendOtpException;
 import io.mosip.esignet.api.spi.Authenticator;
 import io.mosip.esignet.api.util.ErrorConstants;
-import io.mosip.esignet.sunbirdrc.integration.dto.RegistrySearchRequestDto;
+import io.mosip.esignet.credissuer.integration.dto.RegistrySearchRequestDto;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,40 +34,28 @@ import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import org.springframework.cache.CacheManager;
 
 
-@ConditionalOnProperty(value = "mosip.esignet.integration.authenticator", havingValue = "SunbirdRCAuthenticationService")
+@ConditionalOnProperty(value = "mosip.esignet.integration.authenticator", havingValue = "CredIssuerAuthenticationService")
 @Component
 @Slf4j
-public class SunbirdRCAuthenticationService implements Authenticator {
+public class CredIssuerAuthenticationService implements Authenticator {
 
     private final String FILTER_EQUALS_OPERATOR="eq";
 
     private final String FIELD_ID_KEY="id";
 
-    @Value("#{${mosip.esignet.authenticator.sunbird-rc.auth-factor.kba.field-details}}")
+    @Value("#{${mosip.esignet.authenticator.credissuer.auth-factor.kba.field-details}}")
     private List<Map<String,String>> fieldDetailList;
 
-    @Value("${mosip.esignet.authenticator.sunbird-rc.auth-factor.kba.registry-search-url}")
+    @Value("${mosip.esignet.authenticator.credissuer.auth-factor.kba.registry-search-url}")
     private String registrySearchUrl;
 
-    @Value("${mosip.esignet.authenticator.sunbird-rc.auth-factor.kba.individual-id-field}")
+    @Value("${mosip.esignet.authenticator.credissuer.auth-factor.kba.individual-id-field}")
     private String idField;
 
-    @Value("${mosip.esignet.authenticator.sunbird-rc.kba.entity-id-field}")
+    @Value("${mosip.esignet.authenticator.credissuer.kba.entity-id-field}")
     private String entityIdField;
-
-    @Value("${io.credissuer.com.get-credential-url}")
-    String getCredentialUrl;
-
-    @Value("${mosip.esignet.ida.vci-user-info-cache}")
-    private String userinfoCache;
-
-    private static final String ACCESS_TOKEN_HASH = "accessTokenHash";
-
-    @Autowired
-    CacheManager cacheManager;
 
     @Autowired
     private RestTemplate restTemplate;
@@ -78,11 +66,11 @@ public class SunbirdRCAuthenticationService implements Authenticator {
 
     @PostConstruct
     public void initialize() throws KycAuthException {
-        log.info("Started to setup Sunbird-RC Authenticator");
+        log.info("Started to setup credissuer Authenticator");
         boolean individualIdFieldIsValid = false;
         if(fieldDetailList==null || fieldDetailList.isEmpty()){
             log.error("Invalid configuration for field-details");
-            throw new KycAuthException("sunbird-rc authenticator field is not configured properly");
+            throw new KycAuthException("credissuer authenticator field is not configured properly");
         }
         for (Map<String, String> field : fieldDetailList) {
             if (field.containsKey(FIELD_ID_KEY) && field.get(FIELD_ID_KEY).equals(idField)) {
