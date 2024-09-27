@@ -33,6 +33,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.env.Environment;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.RequestEntity;
 import org.springframework.http.ResponseEntity;
@@ -50,6 +51,7 @@ import javax.annotation.PostConstruct;
 
 
 @ConditionalOnProperty(value = "mosip.esignet.integration.vci-plugin", havingValue = "SunbirdRCVCIssuancePlugin")
+
 @Component
 @Slf4j
 public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
@@ -87,6 +89,9 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
 
     @Value("#{'${mosip.esignet.vciplugin.sunbird-rc.supported-credential-types}'.split(',')}")
     List<String> supportedCredentialTypes;
+
+    @Value("${mosip.esignet.authenticator.credissuer.bearer-token}")
+    private String credIssuerBeaerToken;
 
     private final Map<String, Template> credentialTypeTemplates = new HashMap<>();
 
@@ -152,8 +157,10 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
     }
 
     private Map<String,Object> fetchCredential(String entityUrl) throws VCIExchangeException {
-        RequestEntity requestEntity = RequestEntity
-                .get(UriComponentsBuilder.fromUriString(entityUrl).build().toUri()).build();
+        RequestEntity<Void> requestEntity = RequestEntity
+            .get(UriComponentsBuilder.fromUriString(entityUrl).build().toUri())
+            .header("Authorization", "Bearer " + credIssuerBeaerToken)  // Set the headers
+            .build();
         ResponseEntity<Map<String,Object>> responseEntity = restTemplate.exchange(requestEntity,
                 new ParameterizedTypeReference<Map<String,Object>>() {});
         if (responseEntity.getStatusCode().is2xxSuccessful() && responseEntity.getBody() != null) {
