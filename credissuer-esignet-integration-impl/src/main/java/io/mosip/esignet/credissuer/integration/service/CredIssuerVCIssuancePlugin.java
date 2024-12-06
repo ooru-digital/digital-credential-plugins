@@ -3,23 +3,30 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-package io.mosip.esignet.sunbirdrc.integration.service;
+package io.mosip.esignet.credissuer.integration.service;
 
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLConnection;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mosip.esignet.api.exception.VCIExchangeException;
 import io.mosip.esignet.api.util.ErrorConstants;
+import io.mosip.kernel.core.util.CryptoUtil;
+import io.mosip.kernel.signature.dto.JWTSignatureRequestDto;
+import io.mosip.kernel.signature.dto.JWTSignatureResponseDto;
+import io.mosip.kernel.signature.service.SignatureService;
 import org.apache.velocity.Template;
 import org.apache.velocity.VelocityContext;
 import org.apache.velocity.app.VelocityEngine;
@@ -33,7 +40,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.env.Environment;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.RequestEntity;
 import org.springframework.http.ResponseEntity;
@@ -45,20 +51,30 @@ import io.mosip.esignet.api.spi.VCIssuancePlugin;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
-import org.springframework.cache.CacheManager;
+import java.security.GeneralSecurityException;
+import foundation.identity.jsonld.JsonLDException;
+import foundation.identity.jsonld.ConfigurableDocumentLoader;
+import foundation.identity.jsonld.JsonLDException;
+import foundation.identity.jsonld.JsonLDObject;
+import info.weboftrust.ldsignatures.LdProof;
+import info.weboftrust.ldsignatures.canonicalizer.URDNA2015Canonicalizer;
+import java.net.URI;
+
+
+
 
 import javax.annotation.PostConstruct;
 
 
-@ConditionalOnProperty(value = "mosip.esignet.integration.vci-plugin", havingValue = "SunbirdRCVCIssuancePlugin")
-
+@ConditionalOnProperty(value = "mosip.esignet.integration.vci-plugin", havingValue = "CredIssuerVCIssuancePlugin")
 @Component
 @Slf4j
-public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
+public class CredIssuerVCIssuancePlugin implements VCIssuancePlugin {
 
-    private static final String CREDENTIAL_TYPE_PROPERTY_PREFIX ="mosip.esignet.vciplugin.sunbird-rc.credential-type";
+    private static final String CREDENTIAL_TYPE_PROPERTY_PREFIX ="mosip.esignet.vciplugin.credissuer.credential-type";
 
     private static final String LINKED_DATA_PROOF_VC_FORMAT ="ldp_vc";
+    public static final String UTC_DATETIME_PATTERN = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
 
     private static final String TEMPLATE_URL = "template-url";
 
@@ -72,6 +88,13 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
 
     private static final String CREDENTIAL_OBJECT_KEY = "credential";
 
+    public static final String OIDC_SERVICE_APP_ID = "OIDC_SERVICE";
+
+    private ConfigurableDocumentLoader confDocumentLoader = null;
+
+    @Value("${mosip.esignet.mock.vciplugin.verification-method}")
+    private String verificationMethod;
+
     @Autowired
     Environment env;
 
@@ -81,17 +104,14 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
     @Autowired
     private RestTemplate restTemplate;
 
-    @Value("${mosip.esignet.vciplugin.sunbird-rc.issue-credential-url}")
+    @Autowired
+    private SignatureService signatureService;
+
+    @Value("${mosip.esignet.vciplugin.credissuer.issue-credential-url}")
     String issueCredentialUrl;
 
-    @Value("${io.credissuer.com.get-credential-url}")
-    String getCredentialUrl;
-
-    @Value("#{'${mosip.esignet.vciplugin.sunbird-rc.supported-credential-types}'.split(',')}")
+    @Value("#{'${mosip.esignet.vciplugin.credissuer.supported-credential-types}'.split(',')}")
     List<String> supportedCredentialTypes;
-
-    @Value("${mosip.esignet.authenticator.credissuer.bearer-token}")
-    private String credIssuerBeaerToken;
 
     private final Map<String, Template> credentialTypeTemplates = new HashMap<>();
 
@@ -99,13 +119,6 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
 
     private VelocityEngine vEngine;
 
-    @Autowired
-    CacheManager cacheManager;
-
-    @Value("${mosip.esignet.ida.vci-user-info-cache}")
-    private String userinfoCache;
-
-    private static final String ACCESS_TOKEN_HASH = "accessTokenHash";
 
     @PostConstruct
     public  void initialize() throws VCIExchangeException {
@@ -135,17 +148,11 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
     public VCResult<JsonLDObject> getVerifiableCredentialWithLinkedDataProof(VCRequestDto vcRequestDto, String holderId,
                                                                              Map<String, Object> identityDetails) throws VCIExchangeException {
         JsonLDObject vcJsonLdObject = null;
-
-        String individualId = null;
-        try {
-            individualId = getOAuthTransaction(identityDetails.get(ACCESS_TOKEN_HASH).toString());
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-
+        log.info("inside>>>>>>>>>>>>>>");
         try {
             VCResult vcResult = new VCResult();
-            Map<String,Object> vcResponseMap = fetchCredential(getCredentialUrl + individualId);
+            //vcJsonLdObject = buildDummyJsonLDWithLDProof(holderId);
+            Map<String,Object> vcResponseMap = fetchCredential("https://run.mocky.io/v3/a55b2c6d-a93a-4337-946f-0f608f16f0ac");
             vcJsonLdObject = JsonLDObject.fromJsonObject((Map<String, Object>)vcResponseMap.get(CREDENTIAL_OBJECT_KEY));
             vcResult.setCredential(vcJsonLdObject);
             vcResult.setFormat("ldp_vc");
@@ -156,11 +163,64 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
         throw new VCIExchangeException();
     }
 
+    /*private JsonLDObject buildDummyJsonLDWithLDProof(String holderId)
+            throws IOException, GeneralSecurityException, JsonLDException, URISyntaxException {
+        Map<String, Object> formattedMap = new HashMap<>();
+        formattedMap.put("id", holderId);
+        formattedMap.put("name", "John Doe");
+        formattedMap.put("email", "john.doe@mail.com");
+        formattedMap.put("gender", "Male");
+
+        Map<String, Object> verCredJsonObject = new HashMap<>();
+        verCredJsonObject.put("@context", Arrays.asList("https://www.w3.org/2018/credentials/v1", "https://schema.org/"));
+        verCredJsonObject.put("type", Arrays.asList("VerifiableCredential", "Person"));
+        verCredJsonObject.put("id", "urn:uuid:3978344f-8596-4c3a-a978-8fcaba3903c5");
+        verCredJsonObject.put("issuer", "did:example:123456789");
+        verCredJsonObject.put("issuanceDate", getUTCDateTime());
+        verCredJsonObject.put("credentialSubject", formattedMap);
+
+        JsonLDObject vcJsonLdObject = JsonLDObject.fromJsonObject(verCredJsonObject);
+        vcJsonLdObject.setDocumentLoader(confDocumentLoader);
+        // vc proof
+        Date created = Date
+                .from(LocalDateTime
+                        .parse((String) verCredJsonObject.get("issuanceDate"),
+                                DateTimeFormatter.ofPattern(UTC_DATETIME_PATTERN))
+                        .atZone(ZoneId.systemDefault()).toInstant());
+        LdProof vcLdProof = LdProof.builder().defaultContexts(false).defaultTypes(false).type("RsaSignature2018")
+                .created(created).proofPurpose("assertionMethod")
+                .verificationMethod(URI.create(verificationMethod))
+                .build();
+
+        URDNA2015Canonicalizer canonicalizer = new URDNA2015Canonicalizer();
+        byte[] vcSignBytes = canonicalizer.canonicalize(vcLdProof, vcJsonLdObject);
+        String vcEncodedData = CryptoUtil.encodeToURLSafeBase64(vcSignBytes);
+
+        JWTSignatureRequestDto jwtSignatureRequestDto = new JWTSignatureRequestDto();
+        jwtSignatureRequestDto.setApplicationId(OIDC_SERVICE_APP_ID);
+        jwtSignatureRequestDto.setReferenceId("");
+        jwtSignatureRequestDto.setIncludePayload(false);
+        jwtSignatureRequestDto.setIncludeCertificate(true);
+        jwtSignatureRequestDto.setIncludeCertHash(true);
+        jwtSignatureRequestDto.setDataToSign(vcEncodedData);
+        JWTSignatureResponseDto responseDto = signatureService.jwtSign(jwtSignatureRequestDto);
+        LdProof ldProofWithJWS = LdProof.builder().base(vcLdProof).defaultContexts(false)
+                .jws(responseDto.getJwtSignedData()).build();
+        ldProofWithJWS.addToJsonLDObject(vcJsonLdObject);
+        return vcJsonLdObject;
+    }*/
+
+
+
+    @Override
+    public VCResult<String> getVerifiableCredential(VCRequestDto vcRequestDto, String holderId, Map<String, Object> identityDetails) throws VCIExchangeException {
+
+        throw new VCIExchangeException(ErrorConstants.NOT_IMPLEMENTED);
+    }
+
     private Map<String,Object> fetchCredential(String entityUrl) throws VCIExchangeException {
-        RequestEntity<Void> requestEntity = RequestEntity
-            .get(UriComponentsBuilder.fromUriString(entityUrl).build().toUri())
-            .header("Authorization", "Bearer " + credIssuerBeaerToken)  // Set the headers
-            .build();
+        RequestEntity requestEntity = RequestEntity
+                .get(UriComponentsBuilder.fromUriString(entityUrl).build().toUri()).build();
         ResponseEntity<Map<String,Object>> responseEntity = restTemplate.exchange(requestEntity,
                 new ParameterizedTypeReference<Map<String,Object>>() {});
         if (responseEntity.getStatusCode().is2xxSuccessful() && responseEntity.getBody() != null) {
@@ -169,91 +229,6 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
             log.error("Credissuer service is not running. Status Code: " , responseEntity.getStatusCode());
             throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    public String getOAuthTransaction(String accessTokenHash) throws Exception {
-        try {
-            if (cacheManager.getCache(userinfoCache) != null) {
-                return cacheManager.getCache(userinfoCache).get(accessTokenHash, String.class);	//NOSONAR getCache() will not be returning null here.
-            }
-            throw new Exception("cache_missing>>>>>>>>");
-        } catch (Exception ex) {
-            // Log or handle the exception as needed
-            ex.printStackTrace();
-
-            // Extract individual ID from the stack trace
-            String individualId = extractIndividualIdFromStackTrace(ex);
-            return individualId;
-        }
-
-    }
-
-    private String extractIndividualIdFromStackTrace(Exception ex) {
-        String stackTrace = getStackTrace(ex);
-
-        // Define a regular expression pattern to match the individualId
-        Pattern pattern = Pattern.compile("individualId=([a-zA-Z0-9_-]+)");
-        Matcher matcher = pattern.matcher(stackTrace);
-
-        // Find the first occurrence of the pattern
-        if (matcher.find()) {
-            return matcher.group(1); // Group 1 contains the matched individualId
-        }
-
-        return null; // Return null if individualId is not found
-    }
-
-    private String getStackTrace(Exception ex) {
-        StringWriter sw = new StringWriter();
-        ex.printStackTrace(new PrintWriter(sw));
-        return sw.toString();
-    }
-
-    /*@Override
-    public VCResult<JsonLDObject> getVerifiableCredentialWithLinkedDataProof(VCRequestDto vcRequestDto, String holderId, Map<String, Object> identityDetails) throws VCIExchangeException {
-        if (vcRequestDto == null || vcRequestDto.getType() == null) {
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        List<String> types = vcRequestDto.getType();
-        if (types.isEmpty() || !types.get(0).equals("VerifiableCredential")) {
-            log.error("Invalid request: first item in type is not VerifiableCredential");
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        types.remove(0);
-        String requestedCredentialType = String.join("-", types);
-        //Check if the key is in the supported-credential-types
-        if (!supportedCredentialTypes.contains(requestedCredentialType)) {
-            log.error("Credential type is not supported");
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        //Validate context of vcrequestdto with template
-        List<String> contextList=vcRequestDto.getContext();
-        for(String supportedType:supportedCredentialTypes){
-            Template template=credentialTypeTemplates.get(supportedType);
-            validateContextUrl(template,contextList);
-        }
-        String osid = (identityDetails.containsKey("sub")) ? (String) identityDetails.get("sub") : null;
-        if (osid == null) {
-            log.error("Invalid request: osid is null");
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        String registryUrl=credentialTypeConfigMap.get(requestedCredentialType).get(REGISTRY_GET_URL);
-        Map<String,Object> responseRegistryMap =fetchRegistryObject(registryUrl+osid);
-        Map<String,Object> credentialRequestMap = createCredentialIssueRequest(requestedCredentialType, responseRegistryMap,vcRequestDto,holderId);
-        Map<String,Object> vcResponseMap =sendCredentialIssueRequest(credentialRequestMap);
-
-        VCResult vcResult = new VCResult();
-        JsonLDObject vcJsonLdObject = JsonLDObject.fromJsonObject((Map<String, Object>)vcResponseMap.get(CREDENTIAL_OBJECT_KEY));
-        vcResult.setCredential(vcJsonLdObject);
-        vcResult.setFormat(LINKED_DATA_PROOF_VC_FORMAT);
-        return vcResult;
-    }*/
-
-
-    @Override
-    public VCResult<String> getVerifiableCredential(VCRequestDto vcRequestDto, String holderId, Map<String, Object> identityDetails) throws VCIExchangeException {
-        throw new VCIExchangeException(ErrorConstants.NOT_IMPLEMENTED);
     }
 
     private Map<String,Object> fetchRegistryObject(String entityUrl) throws VCIExchangeException {
@@ -330,14 +305,14 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
 
     private void validateAndCachePropertiesForCredentialType(String credentialType) throws VCIExchangeException {
         Map<String,String> configMap=new HashMap<>();
-        validateAndLoadProperty(CREDENTIAL_TYPE_PROPERTY_PREFIX + "." + credentialType + "." + TEMPLATE_URL,TEMPLATE_URL,configMap);
+        //validateAndLoadProperty(CREDENTIAL_TYPE_PROPERTY_PREFIX + "." + credentialType + "." + TEMPLATE_URL,TEMPLATE_URL,configMap);
         validateAndLoadProperty(CREDENTIAL_TYPE_PROPERTY_PREFIX + "." + credentialType + "." + REGISTRY_GET_URL,REGISTRY_GET_URL,configMap);
         validateAndLoadProperty(CREDENTIAL_TYPE_PROPERTY_PREFIX + "." + credentialType + "." + CRED_SCHEMA_ID,CRED_SCHEMA_ID,configMap);
         validateAndLoadProperty(CREDENTIAL_TYPE_PROPERTY_PREFIX + "." + credentialType + "." + CRED_SCHEMA_VESRION,CRED_SCHEMA_VESRION,configMap);
         validateAndLoadProperty(CREDENTIAL_TYPE_PROPERTY_PREFIX + "." + credentialType + "." + STATIC_VALUE_MAP_ISSUER_ID,STATIC_VALUE_MAP_ISSUER_ID,configMap);
 
-        String templateUrl = env.getProperty(CREDENTIAL_TYPE_PROPERTY_PREFIX +"." + credentialType + "." + TEMPLATE_URL);
-        validateAndCacheTemplate(templateUrl,credentialType);
+        //String templateUrl = env.getProperty(CREDENTIAL_TYPE_PROPERTY_PREFIX +"." + credentialType + "." + TEMPLATE_URL);
+        //validateAndCacheTemplate(templateUrl,credentialType);
         // cache configuration with their credential type
         credentialTypeConfigMap.put(credentialType,configMap);
     }
@@ -350,11 +325,11 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
         configMap.put(credentialProp,propertyValue);
     }
 
-    private void validateAndCacheTemplate(String templateUrl, String credentialType){
-        Template template = vEngine.getTemplate(templateUrl);
-        //Todo Validate if all the templates are valid JSON-LD documents
-        credentialTypeTemplates.put(credentialType, template);
-    }
+    /*private void validateAndCacheTemplate(String templateUrl, String credentialType){
+            Template template = vEngine.getTemplate(templateUrl);
+            //Todo Validate if all the templates are valid JSON-LD documents
+            credentialTypeTemplates.put(credentialType, template);
+    }*/
 
     private void validateContextUrl(Template template,List<String> vcRequestContextList) throws VCIExchangeException {
         try{
@@ -373,4 +348,9 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
             throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
         }
     }
+
+    private static String getUTCDateTime() {
+        return ZonedDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern(UTC_DATETIME_PATTERN));
+    }
+
 }
