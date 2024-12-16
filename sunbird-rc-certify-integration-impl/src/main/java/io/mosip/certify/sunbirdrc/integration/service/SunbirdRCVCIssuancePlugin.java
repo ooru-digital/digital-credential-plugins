@@ -36,6 +36,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
+import org.springframework.cache.CacheManager;
+import org.springframework.http.HttpHeaders;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -46,6 +48,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.io.PrintWriter;
+
 
 
 
@@ -88,17 +94,29 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
     @Value("${mosip.certify.vciplugin.sunbird-rc.issue-credential-url}")
     String issueCredentialUrl;
 
+    @Value("${io.credissuer.com.get-credential-url}")
+    String getCredentialUrl;
+
     @Value("${mosip.certify.vciplugin.sunbird-rc.enable-psut-based-registry-search:false}")
     private boolean enablePSUTBasedRegistrySearch;
 
     @Value("#{'${mosip.certify.vciplugin.sunbird-rc.supported-credential-types}'.split(',')}")
     List<String> supportedCredentialTypes;
 
+    @Value("${mosip.esignet.authenticator.credissuer.bearer-token}")
+    private String credIssuerBeaerToken;
+
     private final Map<String, Template> credentialTypeTemplates = new HashMap<>();
 
     private final Map<String,Map<String,String>> credentialTypeConfigMap = new HashMap<>();
 
     private VelocityEngine vEngine;
+
+    @Autowired
+    CacheManager cacheManager;
+    @Value("${mosip.esignet.ida.vci-user-info-cache}")
+    private String userinfoCache;
+    private static final String ACCESS_TOKEN_HASH = "accessTokenHash";
 
 
     @PostConstruct
@@ -121,55 +139,124 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
         vEngine.init();
         //Validate all the supported VC
         for (String credentialType : supportedCredentialTypes) {
-            validateAndCachePropertiesForCredentialType(credentialType.trim());
+            // validateAndCachePropertiesForCredentialType(credentialType.trim());
+        }
+    }
+    // @Override
+    // public VCResult<JsonLDObject> getVerifiableCredentialWithLinkedDataProof(VCRequestDto vcRequestDto, String holderId, Map<String, Object> identityDetails) throws VCIExchangeException {
+    //     if (vcRequestDto == null || vcRequestDto.getType() == null) {
+    //         throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
+    //     }
+    //     List<String> types = vcRequestDto.getType();
+    //     if (types.isEmpty() || !types.get(0).equals("VerifiableCredential")) {
+    //         log.error("Invalid request: first item in type is not VerifiableCredential");
+    //         throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
+    //     }
+    //     types.remove(0);
+    //     String requestedCredentialType = String.join("-", types);
+    //     //Check if the key is in the supported-credential-types
+    //     if (!supportedCredentialTypes.contains(requestedCredentialType)) {
+    //         log.error("Credential type is not supported");
+    //         throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
+    //     }
+    //     //Validate context of vcrequestdto with template
+    //     List<String> contextList=vcRequestDto.getContext();
+    //     for(String supportedType:supportedCredentialTypes){
+    //         Template template=  credentialTypeTemplates.get(supportedType);
+    //         validateContextUrl(template,contextList);
+    //     }
+
+    //     String registrySearchField = (identityDetails.containsKey("sub")) ? (String) identityDetails.get("sub") : null;
+    //     if (registrySearchField == null) {
+    //         log.error("Invalid request: registrySearchField is null");
+    //         throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
+    //     }
+    //     Map<String,Object> responseRegistryMap;
+    //     if(enablePSUTBasedRegistrySearch){
+    //         String registrySearchUrl=credentialTypeConfigMap.get(requestedCredentialType).get(REGISTRY_SEARCH_URL);
+    //         responseRegistryMap= fetchRegistryObjectByPSUT(registrySearchUrl,registrySearchField);
+    //     }else {
+    //         String registryUrl=credentialTypeConfigMap.get(requestedCredentialType).get(REGISTRY_GET_URL);
+    //         responseRegistryMap =fetchRegistryObject(registryUrl+ registrySearchField);
+    //     }
+    //     Map<String,Object> credentialRequestMap = createCredentialIssueRequest(requestedCredentialType, responseRegistryMap,vcRequestDto,holderId);
+    //     Map<String,Object> vcResponseMap =sendCredentialIssueRequest(credentialRequestMap);
+
+    //     VCResult vcResult = new VCResult();
+    //     JsonLDObject vcJsonLdObject = JsonLDObject.fromJsonObject((Map<String, Object>)vcResponseMap.get(CREDENTIAL_OBJECT_KEY));
+    //     vcResult.setCredential(vcJsonLdObject);
+    //     vcResult.setFormat(LINKED_DATA_PROOF_VC_FORMAT);
+    //     return vcResult;
+    // }
+    @Override
+    public VCResult<JsonLDObject> getVerifiableCredentialWithLinkedDataProof(VCRequestDto vcRequestDto, String holderId,
+                                                                             Map<String, Object> identityDetails) throws VCIExchangeException {
+        JsonLDObject vcJsonLdObject = null;
+        String individualId = null;
+        try {
+            individualId = getOAuthTransaction(identityDetails.get(ACCESS_TOKEN_HASH).toString());
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        try {
+            VCResult vcResult = new VCResult();
+            Map<String,Object> vcResponseMap = fetchCredential(getCredentialUrl + individualId);
+            vcJsonLdObject = JsonLDObject.fromJsonObject((Map<String, Object>)vcResponseMap.get(CREDENTIAL_OBJECT_KEY));
+            vcResult.setCredential(vcJsonLdObject);
+            vcResult.setFormat("ldp_vc");
+            return vcResult;
+        } catch (Exception e) {
+            log.error("Failed to build credissuer response", e);
+        }
+        throw new VCIExchangeException();
+    }
+
+    private Map<String,Object> fetchCredential(String entityUrl) throws VCIExchangeException {
+        RequestEntity<Void> requestEntity = RequestEntity
+            .get(UriComponentsBuilder.fromUriString(entityUrl).build().toUri())
+            .header("Authorization", "Bearer " + credIssuerBeaerToken)  // Set the headers
+            .build();
+        ResponseEntity<Map<String,Object>> responseEntity = restTemplate.exchange(requestEntity,
+                new ParameterizedTypeReference<Map<String,Object>>() {});
+        if (responseEntity.getStatusCode().is2xxSuccessful() && responseEntity.getBody() != null) {
+            return responseEntity.getBody();
+        }else {
+            log.error("Credissuer service is not running. Status Code: " , responseEntity.getStatusCode());
+            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
         }
     }
 
-    @Override
-    public VCResult<JsonLDObject> getVerifiableCredentialWithLinkedDataProof(VCRequestDto vcRequestDto, String holderId, Map<String, Object> identityDetails) throws VCIExchangeException {
-        if (vcRequestDto == null || vcRequestDto.getType() == null) {
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
+    @SuppressWarnings("unchecked")
+    public String getOAuthTransaction(String accessTokenHash) throws Exception {
+        try {
+            if (cacheManager.getCache(userinfoCache) != null) {
+                return cacheManager.getCache(userinfoCache).get(accessTokenHash, String.class);	//NOSONAR getCache() will not be returning null here.
+            }
+            throw new Exception("cache_missing>>>>>>>>");
+        } catch (Exception ex) {
+            // Log or handle the exception as needed
+            ex.printStackTrace();
+            // Extract individual ID from the stack trace
+            String individualId = extractIndividualIdFromStackTrace(ex);
+            return individualId;
         }
-        List<String> types = vcRequestDto.getType();
-        if (types.isEmpty() || !types.get(0).equals("VerifiableCredential")) {
-            log.error("Invalid request: first item in type is not VerifiableCredential");
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        types.remove(0);
-        String requestedCredentialType = String.join("-", types);
-        //Check if the key is in the supported-credential-types
-        if (!supportedCredentialTypes.contains(requestedCredentialType)) {
-            log.error("Credential type is not supported");
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        //Validate context of vcrequestdto with template
-        List<String> contextList=vcRequestDto.getContext();
-        for(String supportedType:supportedCredentialTypes){
-            Template template=  credentialTypeTemplates.get(supportedType);
-            validateContextUrl(template,contextList);
-        }
+    }
 
-        String registrySearchField = (identityDetails.containsKey("sub")) ? (String) identityDetails.get("sub") : null;
-        if (registrySearchField == null) {
-            log.error("Invalid request: registrySearchField is null");
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
+    private String extractIndividualIdFromStackTrace(Exception ex) {
+        String stackTrace = getStackTrace(ex);
+        // Define a regular expression pattern to match the individualId
+        Pattern pattern = Pattern.compile("individualId=([a-zA-Z0-9_-]+)");
+        Matcher matcher = pattern.matcher(stackTrace);
+        // Find the first occurrence of the pattern
+        if (matcher.find()) {
+            return matcher.group(1); // Group 1 contains the matched individualId
         }
-        Map<String,Object> responseRegistryMap;
-        if(enablePSUTBasedRegistrySearch){
-            String registrySearchUrl=credentialTypeConfigMap.get(requestedCredentialType).get(REGISTRY_SEARCH_URL);
-            responseRegistryMap= fetchRegistryObjectByPSUT(registrySearchUrl,registrySearchField);
-        }else {
-            String registryUrl=credentialTypeConfigMap.get(requestedCredentialType).get(REGISTRY_GET_URL);
-            responseRegistryMap =fetchRegistryObject(registryUrl+ registrySearchField);
-        }
-        Map<String,Object> credentialRequestMap = createCredentialIssueRequest(requestedCredentialType, responseRegistryMap,vcRequestDto,holderId);
-        Map<String,Object> vcResponseMap =sendCredentialIssueRequest(credentialRequestMap);
-
-        VCResult vcResult = new VCResult();
-        JsonLDObject vcJsonLdObject = JsonLDObject.fromJsonObject((Map<String, Object>)vcResponseMap.get(CREDENTIAL_OBJECT_KEY));
-        vcResult.setCredential(vcJsonLdObject);
-        vcResult.setFormat(LINKED_DATA_PROOF_VC_FORMAT);
-        return vcResult;
+        return null; // Return null if individualId is not found
+    }
+    private String getStackTrace(Exception ex) {
+        StringWriter sw = new StringWriter();
+        ex.printStackTrace(new PrintWriter(sw));
+        return sw.toString();
     }
 
     @Override
