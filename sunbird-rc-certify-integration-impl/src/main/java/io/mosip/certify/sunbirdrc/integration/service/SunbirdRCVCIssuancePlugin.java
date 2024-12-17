@@ -181,54 +181,6 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
         }
     }
 
-    /*@Override
-    public VCResult<JsonLDObject> getVerifiableCredentialWithLinkedDataProof(VCRequestDto vcRequestDto, String holderId, Map<String, Object> identityDetails) throws VCIExchangeException {
-        if (vcRequestDto == null || vcRequestDto.getType() == null) {
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        List<String> types = vcRequestDto.getType();
-        if (types.isEmpty() || !types.get(0).equals("VerifiableCredential")) {
-            log.error("Invalid request: first item in type is not VerifiableCredential");
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        types.remove(0);
-        String requestedCredentialType = String.join("-", types);
-        //Check if the key is in the supported-credential-types
-        if (!supportedCredentialTypes.contains(requestedCredentialType)) {
-            log.error("Credential type is not supported");
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        //Validate context of vcrequestdto with template
-        List<String> contextList=vcRequestDto.getContext();
-        for(String supportedType:supportedCredentialTypes){
-            Template template=  credentialTypeTemplates.get(supportedType);
-            validateContextUrl(template,contextList);
-        }
-
-        String registrySearchField = (identityDetails.containsKey("sub")) ? (String) identityDetails.get("sub") : null;
-        if (registrySearchField == null) {
-            log.error("Invalid request: registrySearchField is null");
-            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
-        }
-        Map<String,Object> responseRegistryMap;
-        if(enablePSUTBasedRegistrySearch){
-            String registrySearchUrl=credentialTypeConfigMap.get(requestedCredentialType).get(REGISTRY_SEARCH_URL);
-            responseRegistryMap= fetchRegistryObjectByPSUT(registrySearchUrl,registrySearchField);
-        }else {
-            String registryUrl=credentialTypeConfigMap.get(requestedCredentialType).get(REGISTRY_GET_URL);
-            responseRegistryMap =fetchRegistryObject(registryUrl+ registrySearchField);
-        }
-        Map<String,Object> credentialRequestMap = createCredentialIssueRequest(requestedCredentialType, responseRegistryMap,vcRequestDto,holderId);
-        Map<String,Object> vcResponseMap =sendCredentialIssueRequest(credentialRequestMap);
-
-        VCResult vcResult = new VCResult();
-        JsonLDObject vcJsonLdObject = JsonLDObject.fromJsonObject((Map<String, Object>)vcResponseMap.get(CREDENTIAL_OBJECT_KEY));
-        vcResult.setCredential(vcJsonLdObject);
-        vcResult.setFormat(LINKED_DATA_PROOF_VC_FORMAT);
-        return vcResult;
-    }
-*/
-
     @Override
     public VCResult<JsonLDObject> getVerifiableCredentialWithLinkedDataProof(VCRequestDto vcRequestDto, String holderId,
                                                                              Map<String, Object> identityDetails) throws VCIExchangeException {
@@ -237,6 +189,7 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
         try {
             OIDCTransaction transaction = getOAuthTransaction(identityDetails.get(ACCESS_TOKEN_HASH).toString());
             individualId = getIndividualId(transaction.getIndividualId());
+            System.out.println("individualId : "+individualId);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -268,29 +221,11 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
         }
     }
 
-  /*  @SuppressWarnings("unchecked")
-    public String getOAuthTransaction(String accessTokenHash) throws Exception {
-        try {
-            if (cacheManager.getCache(userinfoCache) != null) {
-                return cacheManager.getCache(userinfoCache).get(accessTokenHash, OIDCTransaction.class);	//NOSONAR getCache() will not be returning null here.
-            }
-            throw new Exception("cache_missing>>>>>>>>");
-        } catch (Exception ex) {
-            // Log or handle the exception as needed
-            ex.printStackTrace();
-            // Extract individual ID from the stack trace
-            String individualId = extractIndividualIdFromStackTrace(ex);
-            return individualId;
-        }
-    }*/
-
     @SuppressWarnings("unchecked")
     public OIDCTransaction getOAuthTransaction(String accessTokenHash) throws Exception {
         if (cacheManager.getCache(userinfoCache) != null) {
-            System.out.println("Inside getOAuthTransaction>>>>>>>>");
             try {
                 OIDCTransaction oIDCTransaction = cacheManager.getCache(userinfoCache).get(accessTokenHash, OIDCTransaction.class);	//NOSONAR getCache() will not be returning null here.
-                log.info("oIDCTransaction>>>>>>>>", oIDCTransaction);
                 return oIDCTransaction;
             } catch (Exception e) {
                 log.error("Exception occured while fetching the cache", e);
@@ -338,23 +273,7 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
         throw new Exception(NO_UNIQUE_ALIAS);
     }
 
-    private String extractIndividualIdFromStackTrace(Exception ex) {
-        String stackTrace = getStackTrace(ex);
-        // Define a regular expression pattern to match the individualId
-        Pattern pattern = Pattern.compile("individualId=([a-zA-Z0-9_-]+)");
-        Matcher matcher = pattern.matcher(stackTrace);
-        // Find the first occurrence of the pattern
-        if (matcher.find()) {
-            return matcher.group(1); // Group 1 contains the matched individualId
-        }
-        return null; // Return null if individualId is not found
-    }
 
-    private String getStackTrace(Exception ex) {
-        StringWriter sw = new StringWriter();
-        ex.printStackTrace(new PrintWriter(sw));
-        return sw.toString();
-    }
 
     private byte[] b64Decode(String value) {
         return urlSafeDecoder.decode(value);
