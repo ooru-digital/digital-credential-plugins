@@ -37,6 +37,11 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import org.springframework.cache.CacheManager;
+import org.springframework.http.HttpHeaders;
+
+import io.mosip.esignet.core.dto.OIDCTransaction;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringWriter;
@@ -46,8 +51,21 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.io.PrintWriter;
+import java.util.Base64;
+import java.util.Objects;
 
+import java.time.ZoneOffset;
+import java.time.LocalDateTime;
 
+import javax.crypto.Cipher;
+import java.security.Key;
+import io.mosip.kernel.core.keymanager.spi.KeyStore;
+import io.mosip.kernel.keymanagerservice.constant.KeymanagerConstant;
+import io.mosip.kernel.keymanagerservice.entity.KeyAlias;
+import io.mosip.kernel.keymanagerservice.helper.KeymanagerDBHelper;
 
 @ConditionalOnProperty(value = "mosip.certify.integration.vci-plugin", havingValue = "SunbirdRCVCIssuancePlugin")
 @Component
@@ -74,7 +92,15 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
 
     private final String FILTER_EQUALS_OPERATOR = "eq";
 
+    public static final String AES_CIPHER_FAILED = "aes_cipher_failed";
+
+    public static final String OIDC_SERVICE_APP_ID = "CERTIFY_SERVICE";
+
     private final String PSUT_TOKEN="psut";
+
+    public static final String NO_UNIQUE_ALIAS = "no_unique_alias";
+
+    private Base64.Decoder urlSafeDecoder = Base64.getUrlDecoder();
 
     @Autowired
     Environment env;
@@ -83,13 +109,37 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
     ObjectMapper mapper;
 
     @Autowired
+    private KeyStore keyStore;
+
+    @Autowired
     private RestTemplate restTemplate;
+
+    @Autowired
+    private KeymanagerDBHelper dbHelper;
 
     @Value("${mosip.certify.vciplugin.sunbird-rc.issue-credential-url}")
     String issueCredentialUrl;
 
+    @Value("${io.credissuer.com.get-credential-url}")
+    String getCredentialUrl;
+
+    @Value("${mosip.certify.cache.secure.individual-id}")
+    private boolean secureIndividualId;
+
+    @Value("${mosip.certify.cache.store.individual-id}")
+    private boolean storeIndividualId;
+
+    @Value("${mosip.certify.cache.security.secretkey.reference-id}")
+    private String cacheSecretKeyRefId;
+
     @Value("${mosip.certify.vciplugin.sunbird-rc.enable-psut-based-registry-search:false}")
     private boolean enablePSUTBasedRegistrySearch;
+
+    @Value("${mosip.esignet.authenticator.credissuer.bearer-token}")
+    private String credIssuerBeaerToken;
+
+    @Value("${mosip.certify.cache.security.algorithm-name}")
+    private String aesECBTransformation;
 
     @Value("#{'${mosip.certify.vciplugin.sunbird-rc.supported-credential-types}'.split(',')}")
     List<String> supportedCredentialTypes;
@@ -99,6 +149,12 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
     private final Map<String,Map<String,String>> credentialTypeConfigMap = new HashMap<>();
 
     private VelocityEngine vEngine;
+
+    @Autowired
+    CacheManager cacheManager;
+    @Value("${mosip.esignet.ida.vci-user-info-cache}")
+    private String userinfoCache;
+    private static final String ACCESS_TOKEN_HASH = "accessTokenHash";
 
 
     @PostConstruct
@@ -121,11 +177,11 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
         vEngine.init();
         //Validate all the supported VC
         for (String credentialType : supportedCredentialTypes) {
-            validateAndCachePropertiesForCredentialType(credentialType.trim());
+            //validateAndCachePropertiesForCredentialType(credentialType.trim());
         }
     }
 
-    @Override
+    /*@Override
     public VCResult<JsonLDObject> getVerifiableCredentialWithLinkedDataProof(VCRequestDto vcRequestDto, String holderId, Map<String, Object> identityDetails) throws VCIExchangeException {
         if (vcRequestDto == null || vcRequestDto.getType() == null) {
             throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
@@ -171,6 +227,138 @@ public class SunbirdRCVCIssuancePlugin implements VCIssuancePlugin {
         vcResult.setFormat(LINKED_DATA_PROOF_VC_FORMAT);
         return vcResult;
     }
+*/
+
+    @Override
+    public VCResult<JsonLDObject> getVerifiableCredentialWithLinkedDataProof(VCRequestDto vcRequestDto, String holderId,
+                                                                             Map<String, Object> identityDetails) throws VCIExchangeException {
+        JsonLDObject vcJsonLdObject = null;
+        String individualId = null;
+        try {
+            OIDCTransaction transaction = getOAuthTransaction(identityDetails.get(ACCESS_TOKEN_HASH).toString());
+            individualId = getIndividualId(transaction.getIndividualId());
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        try {
+            VCResult vcResult = new VCResult();
+            Map<String,Object> vcResponseMap = fetchCredential(getCredentialUrl + individualId);
+            vcJsonLdObject = JsonLDObject.fromJsonObject((Map<String, Object>)vcResponseMap.get(CREDENTIAL_OBJECT_KEY));
+            vcResult.setCredential(vcJsonLdObject);
+            vcResult.setFormat("ldp_vc");
+            return vcResult;
+        } catch (Exception e) {
+            log.error("Failed to build credissuer response", e);
+        }
+        throw new VCIExchangeException();
+    }
+
+    private Map<String,Object> fetchCredential(String entityUrl) throws VCIExchangeException {
+        RequestEntity<Void> requestEntity = RequestEntity
+                .get(UriComponentsBuilder.fromUriString(entityUrl).build().toUri())
+                .header("Authorization", "Bearer " + credIssuerBeaerToken)  // Set the headers
+                .build();
+        ResponseEntity<Map<String,Object>> responseEntity = restTemplate.exchange(requestEntity,
+                new ParameterizedTypeReference<Map<String,Object>>() {});
+        if (responseEntity.getStatusCode().is2xxSuccessful() && responseEntity.getBody() != null) {
+            return responseEntity.getBody();
+        }else {
+            log.error("Credissuer service is not running. Status Code: " , responseEntity.getStatusCode());
+            throw new VCIExchangeException(ErrorConstants.VCI_EXCHANGE_FAILED);
+        }
+    }
+
+  /*  @SuppressWarnings("unchecked")
+    public String getOAuthTransaction(String accessTokenHash) throws Exception {
+        try {
+            if (cacheManager.getCache(userinfoCache) != null) {
+                return cacheManager.getCache(userinfoCache).get(accessTokenHash, OIDCTransaction.class);	//NOSONAR getCache() will not be returning null here.
+            }
+            throw new Exception("cache_missing>>>>>>>>");
+        } catch (Exception ex) {
+            // Log or handle the exception as needed
+            ex.printStackTrace();
+            // Extract individual ID from the stack trace
+            String individualId = extractIndividualIdFromStackTrace(ex);
+            return individualId;
+        }
+    }*/
+
+    @SuppressWarnings("unchecked")
+    public OIDCTransaction getOAuthTransaction(String accessTokenHash) throws Exception {
+        if (cacheManager.getCache(userinfoCache) != null) {
+            System.out.println("Inside getOAuthTransaction>>>>>>>>");
+            try {
+                OIDCTransaction oIDCTransaction = cacheManager.getCache(userinfoCache).get(accessTokenHash, OIDCTransaction.class);	//NOSONAR getCache() will not be returning null here.
+                log.info("oIDCTransaction>>>>>>>>", oIDCTransaction);
+                return oIDCTransaction;
+            } catch (Exception e) {
+                log.error("Exception occured while fetching the cache", e);
+                throw new Exception(e);
+            }
+
+        }
+        throw new Exception("cache_missing>>>>>");
+    }
+
+    protected String getIndividualId(String encryptedIndividualId) throws Exception {
+        if (!storeIndividualId)
+            return null;
+        return secureIndividualId ? decryptIndividualId(encryptedIndividualId) : encryptedIndividualId;
+    }
+
+    private String decryptIndividualId(String encryptedIndividualId) throws Exception {
+        try {
+            Cipher cipher = Cipher.getInstance(aesECBTransformation);
+            byte[] decodedBytes = b64Decode(encryptedIndividualId);
+            cipher.init(Cipher.DECRYPT_MODE, getSecretKeyFromHSM());
+            return new String(cipher.doFinal(decodedBytes, 0, decodedBytes.length));
+        } catch (Exception e) {
+            log.error("Error Cipher Operations of provided secret data.", e);
+            throw new Exception(AES_CIPHER_FAILED);
+        }
+    }
+
+    private Key getSecretKeyFromHSM() throws Exception {
+        String keyAlias = getKeyAlias(OIDC_SERVICE_APP_ID, cacheSecretKeyRefId);
+        if (Objects.nonNull(keyAlias)) {
+            return keyStore.getSymmetricKey(keyAlias);
+        }
+        throw new Exception(NO_UNIQUE_ALIAS);
+    }
+
+    private String getKeyAlias(String keyAppId, String keyRefId) throws Exception {
+        Map<String, List<KeyAlias>> keyAliasMap = dbHelper.getKeyAliases(keyAppId, keyRefId,
+                LocalDateTime.now(ZoneOffset.UTC));
+        List<KeyAlias> currentKeyAliases = keyAliasMap.get(KeymanagerConstant.CURRENTKEYALIAS);
+        if (!currentKeyAliases.isEmpty() && currentKeyAliases.size() == 1) {
+            return currentKeyAliases.get(0).getAlias();
+        }
+        log.error("CurrentKeyAlias is not unique. KeyAlias count: {}", currentKeyAliases.size());
+        throw new Exception(NO_UNIQUE_ALIAS);
+    }
+
+    private String extractIndividualIdFromStackTrace(Exception ex) {
+        String stackTrace = getStackTrace(ex);
+        // Define a regular expression pattern to match the individualId
+        Pattern pattern = Pattern.compile("individualId=([a-zA-Z0-9_-]+)");
+        Matcher matcher = pattern.matcher(stackTrace);
+        // Find the first occurrence of the pattern
+        if (matcher.find()) {
+            return matcher.group(1); // Group 1 contains the matched individualId
+        }
+        return null; // Return null if individualId is not found
+    }
+
+    private String getStackTrace(Exception ex) {
+        StringWriter sw = new StringWriter();
+        ex.printStackTrace(new PrintWriter(sw));
+        return sw.toString();
+    }
+
+    private byte[] b64Decode(String value) {
+        return urlSafeDecoder.decode(value);
+    };
 
     @Override
     public VCResult<String> getVerifiableCredential(VCRequestDto vcRequestDto, String holderId, Map<String, Object> identityDetails) throws VCIExchangeException {
