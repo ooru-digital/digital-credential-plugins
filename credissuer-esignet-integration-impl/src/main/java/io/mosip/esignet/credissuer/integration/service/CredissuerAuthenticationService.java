@@ -7,9 +7,8 @@ import io.mosip.esignet.api.exception.KycAuthException;
 import io.mosip.esignet.api.exception.KycExchangeException;
 import io.mosip.esignet.api.exception.SendOtpException;
 import io.mosip.esignet.api.spi.Authenticator;
-import io.mosip.esignet.api.dto.SendOtpDto;
-
-
+import io.mosip.esignet.credissuer.integration.entity.KycAuth;
+import io.mosip.esignet.credissuer.integration.repository.KycAuthRepository;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -18,31 +17,26 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.http.RequestEntity;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpMethod;
+
 import javax.annotation.PostConstruct;
 import javax.validation.Valid;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
-import java.util.*;
-
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.*; 
 
 @ConditionalOnProperty(value = "mosip.esignet.integration.authenticator", havingValue = "CredissuerAuthenticationService")
 @Component
 @Slf4j
 public class CredissuerAuthenticationService implements Authenticator {
 
-    // OTP Configuration
     @Value("${mosip.esignet.authenticator.credissuer.send-otp-url}")
     private String otpSendUrl;
 
@@ -55,7 +49,8 @@ public class CredissuerAuthenticationService implements Authenticator {
     @Value("${mosip.esignet.authenticator.credissuer.bearer-token}")
     private String credIssuerBearerToken;
 
-    ArrayList<String> trnHash = new ArrayList<>();
+    @Value("${mosip.esignet.authenticator.credissuer.encrypt-kyc}")
+    private boolean encryptKyc;
 
     @Autowired
     private RestTemplate restTemplate;
@@ -63,6 +58,8 @@ public class CredissuerAuthenticationService implements Authenticator {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private KycAuthRepository kycAuthRepository;
 
     @PostConstruct
     public void initialize() {
@@ -78,14 +75,10 @@ public class CredissuerAuthenticationService implements Authenticator {
                 kycAuthDto.getTransactionId(), clientId);
         try {
             if (kycAuthDto.getChallengeList() == null || kycAuthDto.getChallengeList().isEmpty()) {
-                log.info(">>>>>>>>>>>>>>>:",kycAuthDto.getChallengeList());
-                log.info(">>>>>>>>>>>>>>>:ssdd",kycAuthDto.getChallengeList().isEmpty());
                 throw new KycAuthException("invalid_challenge_format");
             }
             AuthChallenge authChallenge = kycAuthDto.getChallengeList().get(0);
-            log.info(">>>>>>>>>>>>>>>auth",authChallenge);
-            if (Objects.equals(authChallenge.getAuthFactorType(), "OTP")) {
-                log.info(">>>>>>>>>>>>>>>authChallenge.getAuthFactorType():",authChallenge.getAuthFactorType());
+            if ("OTP".equals(authChallenge.getAuthFactorType())) {
                 return validateOtpAuth(kycAuthDto, authChallenge);
             }
             throw new KycAuthException("unsupported_auth_factor");
@@ -100,11 +93,57 @@ public class CredissuerAuthenticationService implements Authenticator {
     }
 
     @Override
-    public KycExchangeResult doKycExchange(String relyingPartyId, String clientId, KycExchangeDto kycExchangeDto)
+    public KycExchangeResult doKycExchange(String relyingPartyId, String clientId, KycExchangeDto request)
             throws KycExchangeException {
-        log.info("kycExchange>>>>>>>>>>>>");
-        log.info("kycExchangeRequestDto>>>>>>", kycExchangeDto);
-        throw new KycExchangeException("NOT_IMPLEMENTED");
+        log.info("KYC Exchange started for transactionId: {}", request.getTransactionId());
+
+        Optional<KycAuth> optionalKycAuth = kycAuthRepository.findById(request.getKycToken());
+        if (optionalKycAuth.isEmpty()) {
+            throw new KycExchangeException("Invalid KYC Token.");
+        }
+
+        KycAuth kycAuth = optionalKycAuth.get();
+
+        if (!Objects.equals(kycAuth.getTransactionId(), request.getTransactionId()) ||
+                !Objects.equals(kycAuth.getIndividualId(), request.getIndividualId()) ||
+                kycAuth.getValidity() != 1) { // 1 = ACTIVE
+            throw new KycExchangeException("Invalid or expired KYC record.");
+        }
+
+        LocalDateTime requestTime = LocalDateTime.now();
+        long seconds = kycAuth.getResponseTime().until(requestTime, ChronoUnit.SECONDS);
+        if (seconds < 0 || seconds > 300) { // 5 mins
+            kycAuth.setValidity(3); // 3 = EXPIRED
+            kycAuthRepository.save(kycAuth);
+            throw new KycExchangeException("KYC session expired.");
+        }
+
+        try {
+            Map<String, Object> kyc = new HashMap<>();
+            kyc.put("sub", kycAuth.getPartnerSpecificUserToken());
+
+            String signedKyc = signKyc(kyc);
+            String finalKyc = encryptKyc ? getJWE(relyingPartyId, signedKyc) : signedKyc;
+
+            kycAuth.setValidity(2);
+            kycAuthRepository.save(kycAuth);
+
+            KycExchangeResult response = new KycExchangeResult();
+            response.setEncryptedKyc(finalKyc);
+            return response;
+        } catch (Exception e) {
+            log.error("Error building KYC data", e);
+            throw new KycExchangeException("KYC_EXCHANGE_FAILED");
+        }
+    }
+
+    private String getJWE(String relyingPartyId, String signedData) {
+        // Placeholder: Replace with real JWE encryption logic
+        return signedData; // No-op if encryption not implemented
+    }
+
+    private String signKyc(Map<String, Object> kycData) throws JsonProcessingException {
+        return objectMapper.writeValueAsString(kycData);
     }
 
     @Override
@@ -221,6 +260,16 @@ public class CredissuerAuthenticationService implements Authenticator {
 
             if (responseEntity.getStatusCode().is2xxSuccessful() && responseEntity.getBody() != null) {
                 log.info("OTP validation successful for transactionId: {}", transactionId);
+                KycAuth kycAuth = new KycAuth();
+                kycAuth.setKycToken(credential_id);
+                kycAuth.setIndividualId(credential_id);
+                kycAuth.setPartnerSpecificUserToken(credential_id);
+                kycAuth.setResponseTime(LocalDateTime.now());
+                kycAuth.setTransactionId(transactionId);
+                kycAuth.setValidity(1);
+
+                kycAuthRepository.save(kycAuth);
+
                 KycAuthResult kycAuthResult = new KycAuthResult();
                 log.info("OTP validation successful for kycAuthResult: {}", kycAuthResult);
 

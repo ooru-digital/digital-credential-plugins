@@ -1,5 +1,5 @@
 
-package io.mosip.esignet.mock.identitysystem.util;
+package io.mosip.esignet.credissuer.integration.util;
 
 
 public class Constants {

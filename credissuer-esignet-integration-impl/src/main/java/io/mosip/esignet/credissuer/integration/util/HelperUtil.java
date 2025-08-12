@@ -15,10 +15,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.stream.IntStream;
 
-import static io.mosip.esignet.mock.identitysystem.util.Constants.UTC_DATETIME_PATTERN;
 
 @Slf4j
 public class HelperUtil {
+    private static final String UTC_DATETIME_PATTERN = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
     public static final String ALGO_SHA3_256 = "SHA3-256";
     public static final String ALGO_SHA_256 = "SHA-256";
     public static final String ALGO_SHA_1 = "SHA-1";
