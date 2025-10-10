@@ -54,17 +54,62 @@ public class DigitalIdDataProviderPlugin implements ExtendedDataProviderPlugin {
     @Value("${credential.issuer.birthCertificate.issuerCredentialTemplateId}")
     private String birthCertificateIssuerCredentialTemplateId;
 
-    @Value("${credential.issuer.passport.orgCode}")
-    private String passportOrgCode;
+    @Value("${credential.issuer.IdCard13.orgCode}")
+    private String IdCard13OrgCode;
 
-    @Value("${credential.issuer.passport.email}")
-    private String passportEmail;
+    @Value("${credential.issuer.IdCard13.email}")
+    private String IdCard13Email;
 
-    @Value("${credential.issuer.passport.issuerCredentialTemplateId}")
-    private String passportIssuerCredentialTemplateId;
+    @Value("${credential.issuer.IdCard13.issuerCredentialTemplateId}")
+    private String IdCard13CredentialTemplateId;
+
+    @Value("${credential.issuer.IdCard12.orgCode}")
+    private String IdCard12OrgCode;
+
+    @Value("${credential.issuer.IdCard12.email}")
+    private String IdCard12Email;
+
+    @Value("${credential.issuer.IdCard12.issuerCredentialTemplateId}")
+    private String IdCard12CredentialTemplateId;
+
+    @Value("${credential.issuer.IdCard11.orgCode}")
+    private String IdCard11OrgCode;
+
+    @Value("${credential.issuer.IdCard11.email}")
+    private String IdCard11Email;
+
+    @Value("${credential.issuer.IdCard11.issuerCredentialTemplateId}")
+    private String IdCard11CredentialTemplateId;
 
     @Autowired
     private Environment environment;
+
+    @Value("${credential.issuer.IdCard10.orgCode}")
+    private String IdCard10OrgCode;
+
+    @Value("${credential.issuer.IdCard10.email}")
+    private String IdCard10Email;
+
+    @Value("${credential.issuer.IdCard10.issuerCredentialTemplateId}")
+    private String IdCard10CredentialTemplateId;
+
+    @Value("${credential.issuer.IdCard09.orgCode}")
+    private String IdCard09OrgCode;
+
+    @Value("${credential.issuer.IdCard09.email}")
+    private String IdCard09Email;
+
+    @Value("${credential.issuer.IdCard09.issuerCredentialTemplateId}")
+    private String IdCard09CredentialTemplateId;
+
+    @Value("${credential.issuer.IdCard08.orgCode}")
+    private String IdCard08OrgCode;
+
+    @Value("${credential.issuer.IdCard08.email}")
+    private String IdCard08Email;
+
+    @Value("${credential.issuer.IdCard08.issuerCredentialTemplateId}")
+    private String IdCard08CredentialTemplateId;
 
 
     @Override
