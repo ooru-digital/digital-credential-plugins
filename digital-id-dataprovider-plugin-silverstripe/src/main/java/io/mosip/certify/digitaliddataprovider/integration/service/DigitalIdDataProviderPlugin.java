@@ -8,6 +8,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.mosip.certify.api.exception.DataProviderExchangeException;
 import io.mosip.certify.digitaliddataprovider.integration.repository.DataProviderRepository;
 import lombok.extern.slf4j.Slf4j;
+
+import io.mosip.certify.digitaliddataprovider.integration.config.CredentialIssuerConfigProperties;
+import io.mosip.certify.digitaliddataprovider.integration.config.CredentialIssuerConfig;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -17,6 +20,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
+import org.springframework.http.HttpHeaders;
 import java.util.HashMap;
 import java.util.Map;
 import org.json.JSONArray;
@@ -24,7 +28,6 @@ import org.json.JSONArray;
 @ConditionalOnProperty(value = "mosip.certify.integration.data-provider-plugin", havingValue = "DigitalIdProviderPlugin")
 @Component
 @Slf4j
-// public class DigitalIdDataProviderPlugin implements DataProviderPlugin {
 public class DigitalIdDataProviderPlugin implements ExtendedDataProviderPlugin {
 
     @Autowired
@@ -45,79 +48,21 @@ public class DigitalIdDataProviderPlugin implements ExtendedDataProviderPlugin {
     @Value("${credissuer.publish.url}")
     private String publishUrl;
 
-    @Value("${credential.issuer.birthCertificate.orgCode}")
-    private String birthCertificateOrgCode;
-
-    @Value("${credential.issuer.birthCertificate.email}")
-    private String birthCertificateEmail;
-
-    @Value("${credential.issuer.birthCertificate.issuerCredentialTemplateId}")
-    private String birthCertificateIssuerCredentialTemplateId;
-
-    @Value("${credential.issuer.IdCard13.orgCode}")
-    private String IdCard13OrgCode;
-
-    @Value("${credential.issuer.IdCard13.email}")
-    private String IdCard13Email;
-
-    @Value("${credential.issuer.IdCard13.issuerCredentialTemplateId}")
-    private String IdCard13CredentialTemplateId;
-
-    @Value("${credential.issuer.IdCard12.orgCode}")
-    private String IdCard12OrgCode;
-
-    @Value("${credential.issuer.IdCard12.email}")
-    private String IdCard12Email;
-
-    @Value("${credential.issuer.IdCard12.issuerCredentialTemplateId}")
-    private String IdCard12CredentialTemplateId;
-
-    @Value("${credential.issuer.IdCard11.orgCode}")
-    private String IdCard11OrgCode;
-
-    @Value("${credential.issuer.IdCard11.email}")
-    private String IdCard11Email;
-
-    @Value("${credential.issuer.IdCard11.issuerCredentialTemplateId}")
-    private String IdCard11CredentialTemplateId;
 
     @Autowired
-    private Environment environment;
-
-    @Value("${credential.issuer.IdCard10.orgCode}")
-    private String IdCard10OrgCode;
-
-    @Value("${credential.issuer.IdCard10.email}")
-    private String IdCard10Email;
-
-    @Value("${credential.issuer.IdCard10.issuerCredentialTemplateId}")
-    private String IdCard10CredentialTemplateId;
-
-    @Value("${credential.issuer.IdCard09.orgCode}")
-    private String IdCard09OrgCode;
-
-    @Value("${credential.issuer.IdCard09.email}")
-    private String IdCard09Email;
-
-    @Value("${credential.issuer.IdCard09.issuerCredentialTemplateId}")
-    private String IdCard09CredentialTemplateId;
-
-    @Value("${credential.issuer.IdCard08.orgCode}")
-    private String IdCard08OrgCode;
-
-    @Value("${credential.issuer.IdCard08.email}")
-    private String IdCard08Email;
-
-    @Value("${credential.issuer.IdCard08.issuerCredentialTemplateId}")
-    private String IdCard08CredentialTemplateId;
-
+    private CredentialIssuerConfigProperties configProperties;
 
     @Override
     public JSONObject fetchData(Map<String, Object> identityDetails) throws DataProviderExchangeException {
         try {
             String credentialType = (String) identityDetails.get("credential_type");
-            String templateEntityIdKey = "credential.issuer." + credentialType + ".issuerCredentialTemplateId";
-            String templateEntityId = environment.getProperty(templateEntityIdKey);
+            CredentialIssuerConfig config = configProperties.getConfigs().get(credentialType);
+
+            if (config == null) {
+                throw new RuntimeException("No issuer configuration found for credential type: " + credentialType);
+            }
+
+            String templateId = config.getTemplateId();
             String dataUniqueId = (String) identityDetails.get("https://za.dpi-poc.com/email");
 
             if (dataUniqueId == null) {
@@ -125,7 +70,7 @@ public class DigitalIdDataProviderPlugin implements ExtendedDataProviderPlugin {
             }
 
             Map<String, Object> requestPayload = new HashMap<>();
-            requestPayload.put("template_entity_id", templateEntityId);
+            requestPayload.put("template_entity_id", templateId);
             requestPayload.put("data_unique_id", dataUniqueId);
 
             HttpHeaders headers = new HttpHeaders();
@@ -184,13 +129,11 @@ public class DigitalIdDataProviderPlugin implements ExtendedDataProviderPlugin {
             }
             log.info("Credential Type extracted: {}", credentialType);
 
-            String orgCodeKey = "credential.issuer." + credentialType + ".orgCode";
-            String emailKey = "credential.issuer." + credentialType + ".email";
-            String templateIdKey = "credential.issuer." + credentialType + ".issuerCredentialTemplateId";
+            CredentialIssuerConfig config = configProperties.getConfigs().get(credentialType);
 
-            String orgCode = environment.getProperty(orgCodeKey);
-            String email = environment.getProperty(emailKey);
-            String templateId = environment.getProperty(templateIdKey);
+            String orgCode = config.getOrgCode();
+            String email = config.getEmail();
+            String templateId = config.getTemplateId();
 
             ObjectMapper mapper = new ObjectMapper();
             ObjectNode signedJsonNode = (ObjectNode) mapper.readTree(signedCredentialJson.toString());
