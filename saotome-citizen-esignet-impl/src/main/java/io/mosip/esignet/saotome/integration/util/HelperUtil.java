@@ -1,6 +1,5 @@
 package io.mosip.esignet.saotome.integration.util;
 
-import io.mosip.esignet.saotome.integration.exception.MockIdentityException;
 import io.mosip.kernel.core.util.StringUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.AntPathMatcher;
@@ -44,16 +43,6 @@ public class HelperUtil {
         return ZonedDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern(UTC_DATETIME_PATTERN));
     }
 
-    public static String generateB64EncodedHash(String algorithm, String value) throws MockIdentityException {
-        try {
-            MessageDigest digest = MessageDigest.getInstance(algorithm);
-            byte[] hash = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-            return urlSafeEncoder.encodeToString(hash);
-        } catch (NoSuchAlgorithmException ex) {
-            log.error("Invalid algorithm : {}", algorithm, ex);
-            throw new MockIdentityException("invalid_algorithm");
-        }
-    }
 
     public static String b64Encode(byte[] bytes) {
         return urlSafeEncoder.encodeToString(bytes);

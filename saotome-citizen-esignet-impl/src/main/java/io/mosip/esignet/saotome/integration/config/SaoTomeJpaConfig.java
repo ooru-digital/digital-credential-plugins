@@ -7,5 +7,5 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 @Configuration
 @EnableJpaRepositories(basePackages = "io.mosip.esignet.saotome.integration.repository")
 @EntityScan(basePackages = "io.mosip.esignet.saotome.integration.entity")
-public class CredIssuerJpaConfig {
+public class SaoTomeJpaConfig {
 }
