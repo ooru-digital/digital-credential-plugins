@@ -65,8 +65,14 @@ public class HelperUtil {
         if (StringUtils.isEmpty(email)) {
             return "";
         }
+        if (!email.contains("@")) {
+            return email;
+        }
         StringBuilder maskedEmail = new StringBuilder(email);
-        IntStream.range(1, StringUtils.split(email, '@')[0].length() + 1).filter(i -> i % 3 != 0)
+        String localPart = StringUtils.split(email, '@')[0];
+
+        IntStream.range(1, localPart.length() + 1)
+                .filter(i -> i % 3 != 0)
                 .forEach(i -> maskedEmail.setCharAt(i - 1, 'X'));
         return maskedEmail.toString();
     }

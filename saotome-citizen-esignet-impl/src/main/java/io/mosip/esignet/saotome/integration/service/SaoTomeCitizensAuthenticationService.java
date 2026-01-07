@@ -268,9 +268,16 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
             /* --------- Parse response --------- */
             Map<String, Object> body = responseEntity.getBody();
-            Map<String, Object> data = (Map<String, Object>) body.get("data");
 
-            boolean verified = data != null && Boolean.TRUE.equals(data.get("verified"));
+            boolean verified = false;
+            if (body != null) {
+                Object dataObj = body.get("data");
+                if (dataObj instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> data = (Map<String, Object>) dataObj;
+                    verified = Boolean.TRUE.equals(data.get("verified"));
+                }
+            }
 
             if (!verified) {
                 log.warn("OTP verification failed for transactionId: {}", transactionId);
