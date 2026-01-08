@@ -192,7 +192,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
             String nationalId = sendOtpDto.getIndividualId();
             String phoneNumber = getPhoneNumber(nationalId);
 
-            if (phoneNumber == null) {
+            if (phoneNumber == null || phoneNumber.trim().isEmpty()) {
                 throw new SendOtpException("PHONE_NUMBER_NOT_FOUND");
             }
 
@@ -228,8 +228,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
         } catch (Exception e) {
             log.error("Failed to send OTP for transactionId: {}", sendOtpDto.getTransactionId(), e);
-            throw new SendOtpException(
-                io.mosip.esignet.core.constants.ErrorConstants.INVALID_OTP_CHANNEL);
+            throw new SendOtpException("SEND_OTP_FAILED");
         }
     }
     private String getPhoneNumber(String nationalId) {
@@ -252,7 +251,8 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
             // Extract mobile number if present
             if (body != null && body.containsKey("mobile_number")) {
-                return String.valueOf(body.get("mobile_number"));
+                Object mobileNum = body.get("mobile_number");
+                return mobileNum != null ? mobileNum.toString() : null;
             }
 
             // Mobile number not available in response
