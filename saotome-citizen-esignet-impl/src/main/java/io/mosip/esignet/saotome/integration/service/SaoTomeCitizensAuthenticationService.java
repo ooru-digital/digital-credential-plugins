@@ -32,6 +32,10 @@ import javax.validation.constraints.NotNull;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.nio.charset.StandardCharsets;
+import io.mosip.kernel.signature.dto.JWTSignatureRequestDto;
+import io.mosip.kernel.signature.dto.JWTSignatureResponseDto;
+import io.mosip.kernel.signature.service.SignatureService;
 
 @ConditionalOnProperty(value = "mosip.esignet.integration.authenticator", havingValue = "SaoTomeCitizensAuthenticationService")
 @Component
@@ -61,6 +65,11 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
     @Autowired
     private KycAuthRepository kycAuthRepository;
+
+    @Autowired
+    private SignatureService signatureService;
+
+    public static final String APPLICATION_ID = "OIDC_PARTNER";
 
     @PostConstruct
     public void initialize() {
@@ -129,13 +138,11 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
             kyc.put("sub", kycAuth.getPartnerSpecificUserToken());
 
             String signedKyc = signKyc(kyc);
-            String finalKyc = encryptKyc ? getJWE(relyingPartyId, signedKyc) : signedKyc;
-
             kycAuth.setValidity(KycAuth.VALIDITY_USED);
             kycAuthRepository.save(kycAuth);
 
             KycExchangeResult response = new KycExchangeResult();
-            response.setEncryptedKyc(finalKyc);
+            response.setEncryptedKyc(signedKyc);
             return response;
         } catch (Exception e) {
             log.error("Error building KYC data", e);
@@ -143,13 +150,26 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
         }
     }
 
-    private String getJWE(String relyingPartyId, String signedData) {
-        // Placeholder: Replace with real JWE encryption logic
-        return signedData; // No-op if encryption not implemented
-    }
+    private String signKyc(Map<String, Object> kyc) throws JsonProcessingException {
+        String payload = objectMapper.writeValueAsString(kyc);
 
-    private String signKyc(Map<String, Object> kycData) throws JsonProcessingException {
-        return objectMapper.writeValueAsString(kycData);
+        JWTSignatureRequestDto jwtSignatureRequestDto = new JWTSignatureRequestDto();
+        jwtSignatureRequestDto.setApplicationId(APPLICATION_ID); // OIDC_PARTNER
+        jwtSignatureRequestDto.setReferenceId("");
+        jwtSignatureRequestDto.setIncludePayload(true);
+        jwtSignatureRequestDto.setIncludeCertificate(false);
+        jwtSignatureRequestDto.setIncludeCertHash(false);
+
+        jwtSignatureRequestDto.setDataToSign(
+            Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(payload.getBytes(StandardCharsets.UTF_8))
+        );
+
+        JWTSignatureResponseDto responseDto =
+                signatureService.jwtSign(jwtSignatureRequestDto);
+
+        return responseDto.getJwtSignedData(); // JWS returned
     }
 
     @Override
@@ -209,7 +229,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
         } catch (Exception e) {
             log.error("Failed to send OTP for transactionId: {}", sendOtpDto.getTransactionId(), e);
             throw new SendOtpException(
-                io.mosip.esignet.core.constants.ErrorConstants.INVALID_OTP_CHANNEL, e);
+                io.mosip.esignet.core.constants.ErrorConstants.INVALID_OTP_CHANNEL);
         }
     }
     private String getPhoneNumber(String nationalId) {
@@ -330,10 +350,10 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
         } catch (HttpClientErrorException e) {
             log.error("HTTP error during OTP verification. Status: {}", e.getStatusCode(), e);
-            throw new KycAuthException("AUTH_FAILED", e);
+            throw new KycAuthException("AUTH_FAILED");
         } catch (Exception e) {
             log.error("Exception during OTP verification for transactionId: {}", transactionId, e);
-            throw new KycAuthException("AUTH_FAILED", e);
+            throw new KycAuthException("AUTH_FAILED");
         }
     }
 
