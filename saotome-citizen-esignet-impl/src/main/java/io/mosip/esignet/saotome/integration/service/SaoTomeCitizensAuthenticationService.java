@@ -117,6 +117,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
         LocalDateTime requestTime = LocalDateTime.now();
         long seconds = kycAuth.getResponseTime().until(requestTime, ChronoUnit.SECONDS);
+        // If seconds < 0, it may be due to clock skew between systems. Expire session if older than 5 mins.
         if (seconds < 0 || seconds > 300) { // 5 mins
             kycAuth.setValidity(KycAuth.VALIDITY_EXPIRED);
             kycAuthRepository.save(kycAuth);
@@ -201,14 +202,14 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
                 result.setTransactionId(sendOtpDto.getTransactionId());
                 return result;
             }
-
+            log.error("Failed to send OTP for transactionId: {}", sendOtpDto.getTransactionId());
             throw new SendOtpException(
-                log.error("Failed to send OTP for transactionId: {}", sendOtpDto.getTransactionId(), e);
-                io.mosip.esignet.api.util.ErrorConstants.SEND_OTP_FAILED, e);
+                io.mosip.esignet.core.constants.ErrorConstants.INVALID_OTP_CHANNEL);
 
         } catch (Exception e) {
+            log.error("Failed to send OTP for transactionId: {}", sendOtpDto.getTransactionId(), e);
             throw new SendOtpException(
-                io.mosip.esignet.api.util.ErrorConstants.SEND_OTP_FAILED, e);
+                io.mosip.esignet.core.constants.ErrorConstants.INVALID_OTP_CHANNEL, e);
         }
     }
     private String getPhoneNumber(String nationalId) {
