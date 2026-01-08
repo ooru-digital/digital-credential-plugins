@@ -21,6 +21,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -205,17 +206,35 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
         }
     }
     private String getPhoneNumber(String nationalId) {
-        ResponseEntity<Map<String, Object>> response =
-                restTemplate.exchange(
-                        citizenDetailsUrl + nationalId + "/",
-                        HttpMethod.GET,
-                        null,
-                        new ParameterizedTypeReference<>() {});
-        Map<String, Object> body = response.getBody();
+        try {
+            // Call citizen details API to fetch registered mobile number
+            ResponseEntity<Map<String, Object>> response =
+                    restTemplate.exchange(
+                            citizenDetailsUrl + nationalId + "/",
+                            HttpMethod.GET,
+                            null,
+                            new ParameterizedTypeReference<>() {});
 
-        if (body != null && body.containsKey("mobile_number")) {
-            return String.valueOf(body.get("mobile_number"));
-        } else {
+            // Return null if API does not respond with success
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                log.warn("Citizen details API returned non-success status: {}", response.getStatusCode());
+                return null;
+            }
+
+            Map<String, Object> body = response.getBody();
+
+            // Extract mobile number if present
+            if (body != null && body.containsKey("mobile_number")) {
+                return String.valueOf(body.get("mobile_number"));
+            }
+
+            // Mobile number not available in response
+            return null;
+
+        } catch (HttpClientErrorException | HttpServerErrorException e) {
+            // Handle HTTP errors gracefully and allow caller to decide next steps
+            log.error("Failed to fetch citizen details for nationalId: {}. Status: {}",
+                    nationalId, e.getStatusCode());
             return null;
         }
     }
