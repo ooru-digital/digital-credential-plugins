@@ -106,15 +106,16 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
         KycAuth kycAuth = optionalKycAuth.get();
 
         if (!Objects.equals(kycAuth.getTransactionId(), request.getTransactionId()) ||
-                !Objects.equals(kycAuth.getIndividualId(), request.getIndividualId()) ||
-                kycAuth.getValidity() != 1) { // 1 = ACTIVE
+            !Objects.equals(kycAuth.getIndividualId(), request.getIndividualId()) ||
+            kycAuth.getValidity() != KycAuth.VALIDITY_ACTIVE) {
+
             throw new KycExchangeException("Invalid or expired KYC record.");
         }
 
         LocalDateTime requestTime = LocalDateTime.now();
         long seconds = kycAuth.getResponseTime().until(requestTime, ChronoUnit.SECONDS);
         if (seconds < 0 || seconds > 300) { // 5 mins
-            kycAuth.setValidity(3); // 3 = EXPIRED
+            kycAuth.setValidity(KycAuth.VALIDITY_EXPIRED);
             kycAuthRepository.save(kycAuth);
             throw new KycExchangeException("KYC session expired.");
         }
@@ -126,8 +127,8 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
             String signedKyc = signKyc(kyc);
             String finalKyc = encryptKyc ? getJWE(relyingPartyId, signedKyc) : signedKyc;
 
-            kycAuth.setValidity(2);
-                kycAuthRepository.save(kycAuth);
+            kycAuth.setValidity(KycAuth.VALIDITY_USED);
+            kycAuthRepository.save(kycAuth);
 
             KycExchangeResult response = new KycExchangeResult();
             response.setEncryptedKyc(finalKyc);
@@ -175,6 +176,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
             Map<String, Object> requestBody = new HashMap<>();
             requestBody.put("national_id", nationalId);
             requestBody.put("phone_number", phoneNumber);
+            requestBody.put("channel", channelToSend);
 
             String requestJson = objectMapper.writeValueAsString(requestBody);
 
@@ -233,8 +235,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
         } catch (HttpClientErrorException | HttpServerErrorException e) {
             // Handle HTTP errors gracefully and allow caller to decide next steps
-            log.error("Failed to fetch citizen details for nationalId: {}. Status: {}",
-                    nationalId, e.getStatusCode());
+            log.error("Failed to fetch citizen details. Status: {}", e.getStatusCode());
             return null;
         }
     }

@@ -12,6 +12,10 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class KycAuth {
 
+    public static final int VALIDITY_ACTIVE = 1;
+    public static final int VALIDITY_USED = 2;
+    public static final int VALIDITY_EXPIRED = 3;
+
     @Id
     @Column(name = "kyc_token")
     private String kycToken;
