@@ -313,7 +313,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
             kycAuth.setPartnerSpecificUserToken(nationalId);
             kycAuth.setTransactionId(transactionId);
             kycAuth.setResponseTime(LocalDateTime.now());
-            kycAuth.setValidity(1);
+            kycAuth.setValidity(KycAuth.VALIDITY_ACTIVE);
 
             kycAuthRepository.save(kycAuth);
 
@@ -339,7 +339,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
     @NoArgsConstructor
     private static class OtpRequestDto {
         private String national_id;
-        private String phone_number; // e.g., "EMAIL", "SMS"
+        private String phone_number;
     }
 
     @Data
