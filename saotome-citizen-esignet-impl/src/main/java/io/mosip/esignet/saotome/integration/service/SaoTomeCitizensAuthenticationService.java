@@ -47,7 +47,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
     @Value("${mosip.esignet.authenticator.saotome.citizen-details-url}")
     private String citizenDetailsUrl;
 
-    @Value("${mosip.esignet.mock.authenticator.ida.otp-channels}")
+    @Value("${mosip.esignet.authenticator.saotome.otp-channels}")
     private List<String> supportedOtpChannels;
 
     @Value("${mosip.esignet.authenticator.saotome.encrypt-kyc}")
@@ -79,6 +79,9 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
                 throw new KycAuthException("invalid_challenge_format");
             }
             AuthChallenge authChallenge = kycAuthDto.getChallengeList().get(0);
+            if (authChallenge == null) {
+                throw new KycAuthException("invalid_challenge_format");
+            }
             if ("OTP".equals(authChallenge.getAuthFactorType())) {
                 return validateOtpAuth(kycAuthDto, authChallenge);
             }
@@ -200,11 +203,12 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
             }
 
             throw new SendOtpException(
-                    io.mosip.esignet.api.util.ErrorConstants.SEND_OTP_FAILED);
+                log.error("Failed to send OTP for transactionId: {}", sendOtpDto.getTransactionId(), e);
+                io.mosip.esignet.api.util.ErrorConstants.SEND_OTP_FAILED, e);
 
         } catch (Exception e) {
             throw new SendOtpException(
-                    io.mosip.esignet.api.util.ErrorConstants.SEND_OTP_FAILED);
+                io.mosip.esignet.api.util.ErrorConstants.SEND_OTP_FAILED, e);
         }
     }
     private String getPhoneNumber(String nationalId) {
@@ -325,10 +329,10 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
         } catch (HttpClientErrorException e) {
             log.error("HTTP error during OTP verification. Status: {}", e.getStatusCode(), e);
-            throw new KycAuthException("AUTH_FAILED");
+            throw new KycAuthException("AUTH_FAILED", e);
         } catch (Exception e) {
             log.error("Exception during OTP verification for transactionId: {}", transactionId, e);
-            throw new KycAuthException("AUTH_FAILED");
+            throw new KycAuthException("AUTH_FAILED", e);
         }
     }
 
