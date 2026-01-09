@@ -76,6 +76,11 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
     @PostConstruct
     public void initialize() {
+        if (otpBearerToken == null || otpBearerToken.trim().isEmpty()) {
+            throw new IllegalStateException(
+                "OTP bearer token is not configured. Please set mosip.esignet.authenticator.saotome.otp-bearer-token");
+        }
+        log.info("OTP bearer token configured successfully.");
         log.info("Initialized Credissuer Authenticator for OTP based authentication.");
     }
 
