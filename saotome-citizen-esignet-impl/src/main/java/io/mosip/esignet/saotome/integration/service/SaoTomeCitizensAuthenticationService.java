@@ -57,6 +57,9 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
     @Value("${mosip.esignet.authenticator.saotome.encrypt-kyc}")
     private boolean encryptKyc;
 
+    @Value("${mosip.esignet.authenticator.saotome.otp-bearer-token}")
+    private String otpBearerToken;
+
     @Autowired
     private RestTemplate restTemplate;
 
@@ -73,6 +76,11 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
     @PostConstruct
     public void initialize() {
+        if (otpBearerToken == null || otpBearerToken.trim().isEmpty()) {
+            throw new IllegalStateException(
+                "OTP bearer token is not configured. Please set mosip.esignet.authenticator.saotome.otp-bearer-token");
+        }
+        log.info("OTP bearer token configured successfully.");
         log.info("Initialized Credissuer Authenticator for OTP based authentication.");
     }
 
@@ -172,6 +180,17 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
         return responseDto.getJwtSignedData(); // JWS returned
     }
 
+    private HttpHeaders buildAuthHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set(
+            HttpHeaders.AUTHORIZATION,
+            "Token " + otpBearerToken
+        );
+        return headers;
+    }
+
+
     @Override
     public SendOtpResult sendOtp(String relyingPartyId, String clientId, SendOtpDto sendOtpDto)
             throws SendOtpException {
@@ -205,8 +224,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
             String requestJson = objectMapper.writeValueAsString(requestBody);
 
             /* --------- Headers --------- */
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpHeaders headers = buildAuthHeaders();
 
             HttpEntity<String> entity = new HttpEntity<>(requestJson, headers);
 
@@ -231,6 +249,8 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
             throw new SendOtpException("SEND_OTP_FAILED");
         }
     }
+
+
     private String getPhoneNumber(String nationalId) {
         try {
             // Call citizen details API to fetch registered mobile number
@@ -294,9 +314,7 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
             String requestJson = objectMapper.writeValueAsString(requestDto);
 
             /* --------- Headers --------- */
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-
+            HttpHeaders headers = buildAuthHeaders();
             HttpEntity<String> entity = new HttpEntity<>(requestJson, headers);
 
             ResponseEntity<Map<String, Object>> responseEntity =
