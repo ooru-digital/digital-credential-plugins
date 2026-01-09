@@ -310,8 +310,6 @@ public class SaoTomeCitizensAuthenticationService implements Authenticator {
 
             /* --------- Headers --------- */
             HttpHeaders headers = buildAuthHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-
             HttpEntity<String> entity = new HttpEntity<>(requestJson, headers);
 
             ResponseEntity<Map<String, Object>> responseEntity =
