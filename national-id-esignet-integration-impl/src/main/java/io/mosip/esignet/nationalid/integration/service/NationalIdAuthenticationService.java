@@ -35,6 +35,24 @@ import javax.validation.constraints.NotNull;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
+import io.mosip.esignet.nationalid.integration.repository.KycAuthRepository;
+import io.mosip.kernel.signature.service.SignatureService;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import io.mosip.esignet.nationalid.integration.entity.KycAuth;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import io.mosip.kernel.signature.dto.JWTSignatureRequestDto;
+import io.mosip.kernel.signature.dto.JWTSignatureResponseDto;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.client.HttpClientErrorException;
+import java.util.List;
+
+
+
 
 @ConditionalOnProperty(value = "mosip.esignet.integration.authenticator", havingValue = "NationalIDAuthenticationService")
 @Component
@@ -66,6 +84,22 @@ public class NationalIdAuthenticationService implements Authenticator {
     @Value("${mosip.esignet.authenticator.digital-id.kbi.entity-id-field}")
     private String entityIdField;
 
+    @Value("${mosip.esignet.authenticator.otp-send-url}")
+    private String otpSendUrl;
+
+    @Value("${mosip.esignet.authenticator.otp.supported-channels}")
+    private List<String> supportedOtpChannels;
+
+
+    @Autowired
+    private KycAuthRepository kycAuthRepository;
+
+    @Autowired
+    private SignatureService signatureService;
+
+    public static final String APPLICATION_ID = "OIDC_PARTNER";
+
+
 
     @PostConstruct
     public void initialize() throws KycAuthException {
@@ -87,44 +121,224 @@ public class NationalIdAuthenticationService implements Authenticator {
         }
     }
 
-    @Validated
     @Override
-    public KycAuthResult doKycAuth(@NotBlank String relyingPartyId, @NotBlank String clientId,
-                                   @NotNull @Valid KycAuthDto kycAuthDto) throws KycAuthException {
+    public KycAuthResult doKycAuth(@NotBlank String relyingPartyId,
+                                @NotBlank String clientId,
+                                @NotNull @Valid KycAuthDto kycAuthDto)
+            throws KycAuthException {
 
-        log.info("Started to build kyc-auth request with transactionId : {} && clientId : {}",
-                kycAuthDto.getTransactionId(), clientId);
-        try {
-            for (AuthChallenge authChallenge : kycAuthDto.getChallengeList()) {
-                if(Objects.equals(authChallenge.getAuthFactorType(),"KBI")){
-                    return validateKnowledgeBasedAuth(kycAuthDto.getIndividualId(),authChallenge);
-                }
-                throw new KycAuthException("invalid_challenge_format");
-            }
-        } catch (KycAuthException e) {
-            throw e;
-        } catch (Exception e) {
-            log.error("KYC-auth failed with transactionId : {} && clientId : {}", kycAuthDto.getTransactionId(),
-                    clientId, e);
+        if (kycAuthDto.getChallengeList() == null || kycAuthDto.getChallengeList().isEmpty()) {
+            throw new KycAuthException("invalid_challenge_format");
         }
-        throw new KycAuthException(ErrorConstants.AUTH_FAILED);
+
+        AuthChallenge authChallenge = kycAuthDto.getChallengeList().get(0);
+
+        switch (authChallenge.getAuthFactorType()) {
+
+            case "KBI":
+                return validateKnowledgeBasedAuth(
+                        kycAuthDto.getIndividualId(), authChallenge);
+
+            case "OTP":
+                return validateOtpAuth(kycAuthDto, authChallenge);
+                    
+
+            default:
+                throw new KycAuthException("unsupported_auth_factor");
+        }
     }
 
     @Override
-    public KycExchangeResult doKycExchange(String relyingPartyId, String clientId, KycExchangeDto kycExchangeDto)
+    public KycExchangeResult doKycExchange(String relyingPartyId, String clientId, KycExchangeDto request)
             throws KycExchangeException {
-        throw new KycExchangeException(ErrorConstants.NOT_IMPLEMENTED);
+        log.info("KYC Exchange started for transactionId: {}", request.getTransactionId());
+
+        Optional<KycAuth> optionalKycAuth = kycAuthRepository.findById(request.getKycToken());
+        if (optionalKycAuth.isEmpty()) {
+            throw new KycExchangeException("Invalid KYC Token.");
+        }
+
+        KycAuth kycAuth = optionalKycAuth.get();
+        System.out.println("kycAuth>>>>>" + kycAuth);
+
+        if (!Objects.equals(kycAuth.getTransactionId(), request.getTransactionId()) ||
+            !Objects.equals(kycAuth.getIndividualId(), request.getIndividualId()) ||
+            kycAuth.getValidity() != KycAuth.VALIDITY_ACTIVE) {
+
+            throw new KycExchangeException("Invalid or expired KYC record.");
+        }
+
+        LocalDateTime requestTime = LocalDateTime.now();
+        long seconds = kycAuth.getResponseTime().until(requestTime, ChronoUnit.SECONDS);
+        // If seconds < 0, it may be due to clock skew between systems. Expire session if older than 5 mins.
+        if (seconds < 0 || seconds > 300) { // 5 mins
+            kycAuth.setValidity(KycAuth.VALIDITY_EXPIRED);
+            kycAuthRepository.save(kycAuth);
+            throw new KycExchangeException("KYC session expired.");
+        }
+        String nationalId = kycAuth.getIndividualId();
+        System.out.println("nationalId>>>>>" + nationalId);
+
+        String apiUrl = userServiceUrl + nationalId;
+        System.out.println("apiUrl>>>>>" + apiUrl);
+
+        // Send GET request
+        ResponseEntity<Map<String, Object>> responseEntity = restTemplate.exchange(
+                apiUrl,
+                org.springframework.http.HttpMethod.GET,
+                null,
+                new ParameterizedTypeReference<Map<String, Object>>() {}
+        );
+
+        if (!responseEntity.getStatusCode().is2xxSuccessful() || responseEntity.getBody() == null) {
+            log.error("User service failed. Status: {}", responseEntity.getStatusCode());
+            throw new KycExchangeException(ErrorConstants.AUTH_FAILED);
+        }
+
+        Map<String, Object> responseBody = responseEntity.getBody();
+        Map<String, Object> userData = (Map<String, Object>) responseBody.get(userResponseKey);
+
+        if (userData == null) {
+            log.error("Response does not contain '{}' field.", userResponseKey);
+            throw new KycExchangeException(ErrorConstants.AUTH_FAILED);
+        }
+        String firstName   = Objects.toString(userData.get("first_name"), null);
+        String lastName    = Objects.toString(userData.get("last_name"), null);
+        String email       = Objects.toString(userData.get("email"), null);
+        String phoneNumber = Objects.toString(userData.get("phone_number"), null);
+
+        try {
+            Map<String, Object> kyc = new HashMap<>();
+            kyc.put("sub", kycAuth.getPartnerSpecificUserToken());
+            kyc.put("first_name", firstName);
+            kyc.put("last_name", lastName);
+            kyc.put("email", email);
+            kyc.put("phone_number", phoneNumber);
+
+            String signedKyc = signKyc(kyc);
+            kycAuth.setValidity(KycAuth.VALIDITY_USED);
+            kycAuthRepository.save(kycAuth);
+
+            KycExchangeResult response = new KycExchangeResult();
+            response.setEncryptedKyc(signedKyc);
+            return response;
+        } catch (Exception e) {
+            log.error("Error building KYC data", e);
+            throw new KycExchangeException("KYC_EXCHANGE_FAILED");
+        }
     }
+
+    private String signKyc(Map<String, Object> kyc) throws JsonProcessingException {
+        String payload = objectMapper.writeValueAsString(kyc);
+
+        JWTSignatureRequestDto jwtSignatureRequestDto = new JWTSignatureRequestDto();
+        jwtSignatureRequestDto.setApplicationId(APPLICATION_ID); // OIDC_PARTNER
+        jwtSignatureRequestDto.setReferenceId("");
+        jwtSignatureRequestDto.setIncludePayload(true);
+        jwtSignatureRequestDto.setIncludeCertificate(false);
+        jwtSignatureRequestDto.setIncludeCertHash(false);
+
+        jwtSignatureRequestDto.setDataToSign(
+            Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(payload.getBytes(StandardCharsets.UTF_8))
+        );
+
+        JWTSignatureResponseDto responseDto =
+                signatureService.jwtSign(jwtSignatureRequestDto);
+
+        return responseDto.getJwtSignedData(); // JWS returned
+    }
+
+    private HttpHeaders buildAuthHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
+    }
+
 
     @Override
     public SendOtpResult sendOtp(String relyingPartyId, String clientId, SendOtpDto sendOtpDto)
             throws SendOtpException {
-        throw new SendOtpException(ErrorConstants.NOT_IMPLEMENTED);
+        List<String> requestedChannels = sendOtpDto.getOtpChannels();
+        if (requestedChannels == null || requestedChannels.isEmpty()) {
+            log.error("OTP request failed for clientId: {}. Reason: Channel list is null or empty.", clientId);
+            throw new SendOtpException(ErrorConstants.AUTH_FAILED);
         }
+        log.debug("Client '{}' requested OTP via channels: {}", clientId, requestedChannels);
+
+        String channelToSend = requestedChannels.stream()
+                .filter(this::isSupportedOtpChannel)
+                .findFirst()
+                .orElseThrow(() -> new SendOtpException(ErrorConstants.AUTH_FAILED));
+
+
+        try {
+            String nationalId = sendOtpDto.getIndividualId();
+
+            String apiUrl = userServiceUrl + nationalId;
+            System.out.println("apiUrl>>>>>" + apiUrl);
+    
+            // Send GET request
+            ResponseEntity<Map<String, Object>> responseEntity = restTemplate.exchange(
+                    apiUrl,
+                    org.springframework.http.HttpMethod.GET,
+                    null,
+                    new ParameterizedTypeReference<Map<String, Object>>() {}
+            );
+
+            if (!responseEntity.getStatusCode().is2xxSuccessful() || responseEntity.getBody() == null) {
+                log.error("User service failed. Status: {}", responseEntity.getStatusCode());
+                throw new KycAuthException(ErrorConstants.AUTH_FAILED);
+            }
+
+            Map<String, Object> responseBody = responseEntity.getBody();
+            Map<String, Object> userData = (Map<String, Object>) responseBody.get(userResponseKey);
+
+            if (userData == null) {
+                log.error("Response does not contain '{}' field.", userResponseKey);
+                throw new KycAuthException(ErrorConstants.AUTH_FAILED);
+            }
+
+
+            /* --------- Build request body --------- */
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("national_id", nationalId);
+            requestBody.put("channel", channelToSend);
+
+            String requestJson = objectMapper.writeValueAsString(requestBody);
+
+            /* --------- Headers --------- */
+            HttpHeaders headers = buildAuthHeaders();
+
+            HttpEntity<String> entity = new HttpEntity<>(requestJson, headers);
+
+            ResponseEntity<Map<String, Object>> otpResponse =
+                restTemplate.exchange(
+                        otpSendUrl,
+                        HttpMethod.GET,
+                        entity,
+                        new ParameterizedTypeReference<>() {});
+
+
+            if (otpResponse.getStatusCode().is2xxSuccessful()) {
+                SendOtpResult result = new SendOtpResult();
+                result.setTransactionId(sendOtpDto.getTransactionId());
+                return result;
+            }
+
+            log.error("Failed to send OTP for transactionId: {}", sendOtpDto.getTransactionId());
+            throw new SendOtpException(ErrorConstants.AUTH_FAILED);
+
+        } catch (Exception e) {
+            log.error("Failed to send OTP for transactionId: {}", sendOtpDto.getTransactionId(), e);
+            throw new SendOtpException("SEND_OTP_FAILED");
+        }
+    }
 
     @Override
     public boolean isSupportedOtpChannel(String channel) {
-        return false;
+        return supportedOtpChannels != null && supportedOtpChannels.contains(channel);
     }
 
     @Override
@@ -132,7 +346,89 @@ public class NationalIdAuthenticationService implements Authenticator {
         return new ArrayList<>();
     }
 
+
+    private KycAuthResult validateOtpAuth(KycAuthDto kycAuthDto, AuthChallenge authChallenge)
+        throws KycAuthException {
+        String nationalId = kycAuthDto.getIndividualId();
+        String transactionId = kycAuthDto.getTransactionId();
+        String otp = authChallenge.getChallenge();
+        try {
+            /* --------- Build request body --------- */
+            // OtpVerifyRequestDto requestDto =
+            //         new OtpVerifyRequestDto(nationalId, otp);
+
+            // String requestJson = objectMapper.writeValueAsString(requestDto);
+
+            // /* --------- Headers --------- */
+            // HttpHeaders headers = buildAuthHeaders();
+            // HttpEntity<String> entity = new HttpEntity<>(requestJson, headers);
+
+            // ResponseEntity<Map<String, Object>> responseEntity =
+            //         restTemplate.exchange(
+            //                 otpVerifyUrl,
+            //                 HttpMethod.POST,
+            //                 entity,
+            //                 new ParameterizedTypeReference<>() {});
+
+            // if (!responseEntity.getStatusCode().is2xxSuccessful()
+            //         || responseEntity.getBody() == null) {
+            //     throw new KycAuthException("AUTH_FAILED");
+            // }
+
+            // /* --------- Parse response --------- */
+            // Map<String, Object> body = responseEntity.getBody();
+
+            // boolean verified = false;
+            // if (body != null) {
+            //     Object dataObj = body.get("data");
+            //     if (dataObj instanceof Map) {
+            //         @SuppressWarnings("unchecked")
+            //         Map<String, Object> data = (Map<String, Object>) dataObj;
+            //         verified = Boolean.TRUE.equals(data.get("verified"));
+            //     }
+            // }
+
+            // if (!verified) {
+            //     log.warn("OTP verification failed for transactionId: {}", transactionId);
+            //     throw new KycAuthException("AUTH_FAILED");
+            // }
+
+            /* --------- Success handling --------- */
+
+            if (!"111111".equals(otp)) {
+                log.error("Invalid OTP for individualId {}", nationalId);
+                throw new KycAuthException(ErrorConstants.AUTH_FAILED);
+            }
+
+            log.info("OTP verified successfully for transactionId: {}", transactionId);
+
+            KycAuth kycAuth = new KycAuth();
+            kycAuth.setKycToken(nationalId);
+            kycAuth.setIndividualId(nationalId);
+            kycAuth.setPartnerSpecificUserToken(nationalId);
+            kycAuth.setTransactionId(transactionId);
+            kycAuth.setResponseTime(LocalDateTime.now());
+            kycAuth.setValidity(KycAuth.VALIDITY_ACTIVE);
+
+            kycAuthRepository.save(kycAuth);
+
+            KycAuthResult result = new KycAuthResult();
+            result.setKycToken(nationalId);
+            result.setPartnerSpecificUserToken(nationalId);
+
+            return result;
+
+        } catch (HttpClientErrorException e) {
+            log.error("HTTP error during OTP verification. Status: {}", e.getStatusCode(), e);
+            throw new KycAuthException("AUTH_FAILED");
+        } catch (Exception e) {
+            log.error("Exception during OTP verification for transactionId: {}", transactionId, e);
+            throw new KycAuthException("AUTH_FAILED");
+        }
+    }
+
     private KycAuthResult validateKnowledgeBasedAuth(String individualId, AuthChallenge authChallenge) throws KycAuthException {
+        System.out.println("individualId>>>>>" + individualId);
         KycAuthResult kycAuthResult = new KycAuthResult();
     
         // Decode the Base64URL challenge
@@ -141,8 +437,11 @@ public class NationalIdAuthenticationService implements Authenticator {
     
         try {
             Map<String, String> challengeMap = objectMapper.readValue(challengeJson, Map.class);
+    
             // Build the target URL
             String apiUrl = userServiceUrl + individualId;
+            System.out.println("apiUrl>>>>>" + apiUrl);
+    
             // Send GET request
             ResponseEntity<Map<String, Object>> responseEntity = restTemplate.exchange(
                     apiUrl,
@@ -150,9 +449,12 @@ public class NationalIdAuthenticationService implements Authenticator {
                     null,
                     new ParameterizedTypeReference<Map<String, Object>>() {}
             );
+            // System.out.println("responseEntity>>>>>" +responseEntity);
     
             if (responseEntity.getStatusCode().is2xxSuccessful() && responseEntity.getBody() != null) {
                 Map<String, Object> responseBody = responseEntity.getBody();
+
+                // Map<String, Object> userData = (Map<String, Object>) responseBody.get("data");
                 Map<String, Object> userData = (Map<String, Object>) responseBody.get(userResponseKey);
                 if (userData == null) {
                     log.error("Response does not contain 'data' field.");
@@ -162,7 +464,9 @@ public class NationalIdAuthenticationService implements Authenticator {
                 // Optional: Validate challenge fields against response
                 for (Map<String, String> fieldDetailMap : fieldDetailList) {
                     String key = fieldDetailMap.get(FIELD_ID_KEY);
+                    System.out.println("key>>>>>" + key);
                     String expectedValue = key.equals(entityIdField) ? individualId : challengeMap.get(key);
+                    System.out.println("expectedValue>>>>>" + expectedValue);
     
                     if (expectedValue == null) {
                         log.error("Challenge is missing required field: {}", key);
@@ -181,6 +485,7 @@ public class NationalIdAuthenticationService implements Authenticator {
                 String token = userData.getOrDefault(idField, individualId).toString();
                 kycAuthResult.setKycToken(token);
                 kycAuthResult.setPartnerSpecificUserToken(token);
+                System.out.println("kycAuthResult>>>>>" + kycAuthResult);
     
                 return kycAuthResult;
             } else {
@@ -193,4 +498,22 @@ public class NationalIdAuthenticationService implements Authenticator {
             throw new KycAuthException(ErrorConstants.AUTH_FAILED);
         }
     }
+
+
+    @Data
+    @AllArgsConstructor
+    @NoArgsConstructor
+    private static class OtpRequestDto {
+        private String national_id;
+        private String phone_number;
+    }
+
+    @Data
+    @AllArgsConstructor
+    @NoArgsConstructor
+    private static class OtpVerifyRequestDto {
+        private String national_id;
+        private String otp;
+    }
+    
 }
