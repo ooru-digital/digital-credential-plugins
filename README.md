@@ -1,3 +1,3 @@
 # digital-credential-plugins
 
-Will contain multiple plugin projects releated to Digital Credentials Stack
+Will contain multiple plugin projects related to Digital Credentials Stack
